@@ -30,12 +30,39 @@ jobs:
 
       - name: Generate launcher PNG icons
         run: |
-          sudo apt-get install -y inkscape 2>/dev/null || true
-          # Create simple solid-colour PNG icons as fallback for pre-API26 devices
-          # Using Python PIL which is available on ubuntu-latest runners
           python3 - <<'EOF'
-          from PIL import Image, ImageDraw
-          import os
+          import os, struct, zlib
+
+          def make_png(size, bg=(17,17,17), fg=(255,68,68)):
+              """Write a minimal valid PNG with a simple S-shaped icon."""
+              pixels = []
+              cx, cy = size // 2, size // 2
+              r = size // 3
+              for y in range(size):
+                  row = []
+                  for x in range(size):
+                      dx, dy = x - cx, y - cy
+                      # Top half arc (upper curve of S)
+                      in_top = (dx*dx + (dy+r//2)*(dy+r//2)) < r*r and dy < 0
+                      # Bottom half arc (lower curve of S)
+                      in_bot = (dx*dx + (dy-r//2)*(dy-r//2)) < r*r and dy > 0
+                      if in_top or in_bot:
+                          row.extend(fg)
+                      else:
+                          row.extend(bg)
+                  # PNG filter byte (0 = None) prepended to each row
+                  pixels.append(bytes([0]) + bytes(row))
+
+              def chunk(name, data):
+                  c = name + data
+                  return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+
+              sig   = b'\x89PNG\r\n\x1a\n'
+              ihdr  = chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+              raw   = zlib.compress(b''.join(pixels))
+              idat  = chunk(b'IDAT', raw)
+              iend  = chunk(b'IEND', b'')
+              return sig + ihdr + idat + iend
 
           sizes = {
               'mipmap-mdpi':   48,
@@ -43,19 +70,13 @@ jobs:
               'mipmap-xhdpi':  96,
               'mipmap-xxhdpi': 144,
           }
-
           for folder, size in sizes.items():
               path = f'app/src/main/res/{folder}'
               os.makedirs(path, exist_ok=True)
-              img = Image.new('RGBA', (size, size), (17, 17, 17, 255))
-              draw = ImageDraw.Draw(img)
-              # Red S-shape simplified as a rectangle for the icon
-              m = size // 6
-              draw.rectangle([m, m, size-m, size//2-m//2], fill=(255, 68, 68, 255))
-              draw.rectangle([m, size//2+m//2, size-m, size-m], fill=(255, 68, 68, 255))
-              img.save(f'{path}/ic_launcher.png')
-              img.save(f'{path}/ic_launcher_round.png')
-          print("Icons generated")
+              png = make_png(size)
+              open(f'{path}/ic_launcher.png', 'wb').write(png)
+              open(f'{path}/ic_launcher_round.png', 'wb').write(png)
+          print("Icons generated OK")
           EOF
 
       - name: Build debug APK
