@@ -54,8 +54,10 @@ class MainActivity : AppCompatActivity() {
         // YTMusic API hostname we intercept headers from
         const val TARGET_HOST = "music.youtube.com"
 
-        // Headers ytmusicapi needs to see to consider the file valid
-        val REQUIRED_HEADERS = setOf("cookie", "x-goog-authuser")
+        // Headers we require in requestHeaders to consider an API call capturable.
+        // NOTE: 'cookie' is intentionally absent — Android WebView strips cookies from
+        // requestHeaders. We inject them from CookieManager in handleCapturedHeaders().
+        val REQUIRED_HEADERS = setOf("x-goog-authuser")
 
         // Full Chrome UA so YouTube Music serves the full web app, not a mobile redirect
         const val CHROME_UA =
@@ -207,15 +209,26 @@ class MainActivity : AppCompatActivity() {
             debugLog("handleCapturedHeaders: skipped (dedup, last write ${now - lastWriteTime}s ago)")
             return
         }
+
+        // Inject cookie from CookieManager — WebView never exposes it in requestHeaders
+        val cookieStr = CookieManager.getInstance().getCookie("https://music.youtube.com")
+        if (cookieStr.isNullOrEmpty()) {
+            debugLog("handleCapturedHeaders: no cookie from CookieManager — skipping")
+            return
+        }
+
+        val mergedHeaders = headers.toMutableMap()
+        mergedHeaders["cookie"] = cookieStr
+
         lastWriteTime = now
-        capturedHeaders = headers
-        debugLog("handleCapturedHeaders: writing ${headers.size} headers: ${headers.keys}")
+        capturedHeaders = mergedHeaders
+        debugLog("handleCapturedHeaders: writing ${mergedHeaders.size} headers (cookie injected, ${cookieStr.length} chars): ${mergedHeaders.keys}")
 
         val sb = StringBuilder()
-        for ((k, v) in headers) {
+        for ((k, v) in mergedHeaders) {
             sb.append("$k: $v\n")
         }
-        writeHeadersFile(sb.toString(), headers)
+        writeHeadersFile(sb.toString(), mergedHeaders)
     }
 
     private fun tryBuildFromWebViewCookies(cookieStr: String, url: String) {
@@ -224,7 +237,6 @@ class MainActivity : AppCompatActivity() {
             debugLog("tryBuildFromWebViewCookies: skipped (dedup)")
             return
         }
-        lastWriteTime = now
         debugLog("tryBuildFromWebViewCookies: building from cookies (${cookieStr.length} chars)")
 
         val uri    = Uri.parse(url)
@@ -242,6 +254,7 @@ class MainActivity : AppCompatActivity() {
             "origin"          to origin,
         )
 
+        lastWriteTime = now
         writeHeadersFile(sb.toString(), pseudoHeaders)
     }
 
