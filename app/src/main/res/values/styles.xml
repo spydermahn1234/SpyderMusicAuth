@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.SpyderMusicAuth" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#0A0A0A</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="colorPrimary">#FF4444</item>
+        <item name="colorPrimaryDark">#CC0000</item>
+        <item name="colorAccent">#FF4444</item>
+    </style>
+
+</resources>
