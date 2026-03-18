@@ -3,9 +3,12 @@ package com.spydermusic.auth
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.webkit.*
 import android.widget.TextView
@@ -75,11 +78,45 @@ class MainActivity : AppCompatActivity() {
         statusCard  = findViewById(R.id.status_card)
         successCard = findViewById(R.id.success_card)
 
-        writeSentinel()
+        ensureStoragePermission()
         setupWebView()
 
         // Load YouTube Music
         webView.loadUrl("https://music.youtube.com")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // User may have just returned from the MANAGE_EXTERNAL_STORAGE settings page
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                writeSentinel()
+            }
+        }
+    }
+
+    /**
+     * On Android 11+ (API 30+), MANAGE_EXTERNAL_STORAGE is a special permission
+     * that must be granted via the system Settings UI — declaring it in the manifest
+     * is not enough. Send the user there if we don't already have it.
+     */
+    private fun ensureStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                writeSentinel()
+            } else {
+                setStatus("SpyderMusic Auth needs 'All files access' to share data with Kodi.\nTap OK in the next screen to grant it.", false)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                }, 2000)
+            }
+        } else {
+            // Below Android 11 — WRITE_EXTERNAL_STORAGE is sufficient
+            writeSentinel()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -209,6 +246,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun writeHeadersFile(rawHeaders: String, headers: Map<String, String>) {
+        // Check permission before attempting any file writes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            runOnUiThread {
+                setStatus("Storage permission not granted. Please reopen the app and allow 'All files access'.", true)
+            }
+            return
+        }
         try {
             val destFile = File(HEADERS_FILE)
             destFile.parentFile?.mkdirs()
