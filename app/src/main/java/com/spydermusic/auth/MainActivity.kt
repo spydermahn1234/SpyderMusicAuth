@@ -45,6 +45,11 @@ class MainActivity : AppCompatActivity() {
 
         // Headers ytmusicapi needs to see to consider the file valid
         val REQUIRED_HEADERS = setOf("cookie", "x-goog-authuser")
+
+        // Full Chrome UA so YouTube Music serves the full web app, not a mobile redirect
+        const val CHROME_UA =
+            "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     }
 
     private lateinit var webView: WebView
@@ -252,12 +257,5 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
-    }
-
-    companion object {
-        // Full Chrome UA so YouTube Music serves the full web app, not a mobile redirect
-        private const val CHROME_UA =
-            "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     }
 }
