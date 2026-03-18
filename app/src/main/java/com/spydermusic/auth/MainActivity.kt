@@ -37,6 +37,12 @@ class MainActivity : AppCompatActivity() {
         const val HEADERS_FILE = "/storage/emulated/0/Android/data/org.xbmc.kodi" +
                 "/files/.kodi/userdata/addon_data/plugin.audio.ytmusic.exp/headers_auth.json"
 
+        // Public directory readable by Kodi despite Android 11+ scoped storage.
+        // Kodi cannot see /Android/data/<other-pkg>/, so we mirror files here.
+        const val PUBLIC_DIR     = "/storage/emulated/0/SpyderMusic"
+        const val PUBLIC_HEADERS = "$PUBLIC_DIR/headers_auth.json"
+        const val SENTINEL_FILE  = "$PUBLIC_DIR/.companion_installed"
+
         // Broadcast the addon listens for
         const val ACTION_AUTH_UPDATED = "com.spydermusic.AUTH_UPDATED"
 
@@ -69,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         statusCard  = findViewById(R.id.status_card)
         successCard = findViewById(R.id.success_card)
 
+        writeSentinel()
         setupWebView()
 
         // Load YouTube Music
@@ -183,6 +190,24 @@ class MainActivity : AppCompatActivity() {
         writeHeadersFile(sb.toString(), pseudoHeaders)
     }
 
+    /**
+     * Write a presence sentinel to the public SpyderMusic directory so that
+     * Kodi's companion_app_installed() check can find it.  Android 11+ scoped
+     * storage blocks Kodi from reading /Android/data/<pkg>/, but the public
+     * /storage/emulated/0/SpyderMusic/ directory is accessible to both apps.
+     */
+    private fun writeSentinel() {
+        try {
+            val sentinel = File(SENTINEL_FILE)
+            if (!sentinel.exists()) {
+                sentinel.parentFile?.mkdirs()
+                sentinel.createNewFile()
+            }
+        } catch (_: Exception) {
+            // Non-fatal — public headers fallback in writeHeadersFile() covers this
+        }
+    }
+
     private fun writeHeadersFile(rawHeaders: String, headers: Map<String, String>) {
         try {
             val destFile = File(HEADERS_FILE)
@@ -190,6 +215,17 @@ class MainActivity : AppCompatActivity() {
 
             // Write raw headers format — ytmusicapi's setup_browser() reads this
             destFile.writeText(rawHeaders, Charsets.UTF_8)
+
+            // Mirror to the public SpyderMusic directory so Kodi can detect
+            // the companion app even when Kodi's own data dir doesn't exist yet
+            // (Android 11+ scoped storage blocks cross-app /Android/data/ reads)
+            try {
+                val publicFile = File(PUBLIC_HEADERS)
+                publicFile.parentFile?.mkdirs()
+                publicFile.writeText(rawHeaders, Charsets.UTF_8)
+            } catch (_: Exception) {
+                // Non-fatal — Kodi path write above is the primary target
+            }
 
             // Also write a metadata sidecar so the addon can check freshness
             val meta = JSONObject().apply {
