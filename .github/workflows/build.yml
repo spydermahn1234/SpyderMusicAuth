@@ -28,9 +28,38 @@ jobs:
         with:
           gradle-version: '8.0'
 
+      - name: Generate launcher PNG icons
+        run: |
+          sudo apt-get install -y inkscape 2>/dev/null || true
+          # Create simple solid-colour PNG icons as fallback for pre-API26 devices
+          # Using Python PIL which is available on ubuntu-latest runners
+          python3 - <<'EOF'
+          from PIL import Image, ImageDraw
+          import os
+
+          sizes = {
+              'mipmap-mdpi':   48,
+              'mipmap-hdpi':   72,
+              'mipmap-xhdpi':  96,
+              'mipmap-xxhdpi': 144,
+          }
+
+          for folder, size in sizes.items():
+              path = f'app/src/main/res/{folder}'
+              os.makedirs(path, exist_ok=True)
+              img = Image.new('RGBA', (size, size), (17, 17, 17, 255))
+              draw = ImageDraw.Draw(img)
+              # Red S-shape simplified as a rectangle for the icon
+              m = size // 6
+              draw.rectangle([m, m, size-m, size//2-m//2], fill=(255, 68, 68, 255))
+              draw.rectangle([m, size//2+m//2, size-m, size-m], fill=(255, 68, 68, 255))
+              img.save(f'{path}/ic_launcher.png')
+              img.save(f'{path}/ic_launcher_round.png')
+          print("Icons generated")
+          EOF
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
-        working-directory: .
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
