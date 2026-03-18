@@ -302,31 +302,36 @@ class MainActivity : AppCompatActivity() {
             return
         }
         try {
-            val destFile = File(HEADERS_FILE)
-            destFile.parentFile?.mkdirs()
-            destFile.writeText(rawHeaders, Charsets.UTF_8)
-            debugLog("writeHeadersFile: wrote Kodi path OK — ${destFile.absolutePath} (${rawHeaders.length} bytes)")
+            // PRIMARY: write to public SpyderMusic directory — always accessible
+            // regardless of Android version. The addon checks this path first.
+            val publicFile = File(PUBLIC_HEADERS)
+            publicFile.parentFile?.mkdirs()
+            publicFile.writeText(rawHeaders, Charsets.UTF_8)
+            debugLog("writeHeadersFile: wrote public path OK — ${publicFile.absolutePath} (${rawHeaders.length} bytes)")
 
+            // SECONDARY: attempt write to Kodi's addon data directory.
+            // This will fail on Android 11+ (EACCES — /Android/data/ is excluded
+            // from MANAGE_EXTERNAL_STORAGE) but succeeds on older devices.
             try {
-                val publicFile = File(PUBLIC_HEADERS)
-                publicFile.parentFile?.mkdirs()
-                publicFile.writeText(rawHeaders, Charsets.UTF_8)
-                debugLog("writeHeadersFile: wrote public path OK — ${publicFile.absolutePath}")
+                val destFile = File(HEADERS_FILE)
+                destFile.parentFile?.mkdirs()
+                destFile.writeText(rawHeaders, Charsets.UTF_8)
+                debugLog("writeHeadersFile: wrote Kodi path OK — ${destFile.absolutePath}")
             } catch (e: Exception) {
-                debugLog("writeHeadersFile: public path write FAILED — $e")
+                debugLog("writeHeadersFile: Kodi path write skipped (expected on Android 11+) — $e")
             }
 
-            // Also write a metadata sidecar so the addon can check freshness
+            // Metadata sidecar alongside the public file
             val meta = JSONObject().apply {
                 put("written_at",    System.currentTimeMillis() / 1000)
                 put("written_by",    "SpyderMusicAuth")
                 put("app_version",   BuildConfig.VERSION_NAME)
                 put("header_count",  headers.size)
             }
-            File(destFile.parent, "auth_meta.json").writeText(meta.toString(2))
+            File(publicFile.parent, "auth_meta.json").writeText(meta.toString(2))
             debugLog("writeHeadersFile: meta written OK")
 
-            sendAuthBroadcast(destFile.absolutePath)
+            sendAuthBroadcast(publicFile.absolutePath)
             debugLog("writeHeadersFile: broadcast sent")
 
             runOnUiThread { showSuccess() }
@@ -334,7 +339,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             debugLog("writeHeadersFile: EXCEPTION — $e")
             runOnUiThread {
-                setStatus("Write failed: ${e.message}\n\nCheck Kodi is installed and has storage permission.", true)
+                setStatus("Write failed: ${e.message}", true)
             }
         }
     }
