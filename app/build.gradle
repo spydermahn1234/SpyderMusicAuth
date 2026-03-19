@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId      "com.spydermusic.auth"
-        minSdk             28   // Android 9+ (supports Shield Pro 2019 and later)
+        minSdk             21   // Covers all Shield TV firmware versions (2015-present)
         targetSdk          34
         versionCode        1
         versionName        "1.0.0"
