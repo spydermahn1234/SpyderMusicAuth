@@ -1,19 +1,23 @@
 package com.spydermusic.auth
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.View
-import android.view.WindowInsetsController
 import android.webkit.*
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileWriter
@@ -23,44 +27,42 @@ import java.util.*
 /**
  * SpyderMusic Auth — companion app for SpyderMusic Kodi addon.
  *
- * Hosts a WebView pointed at music.youtube.com. On every request to the
- * YTMusic API we intercept the headers (Cookie, Authorization, x-goog-*)
- * and write them as headers_auth.json to a shared public directory that
- * both this app and Kodi can access on Android 11+.
+ * Hosts a WebView pointed at music.youtube.com.  On every YTMusic API
+ * request we intercept headers (Cookie, x-goog-*) and write them as
+ * headers_auth.json to a shared public directory both this app and Kodi
+ * can access regardless of Android version.
  *
- * On Android 11+, /Android/data/<other-pkg>/ is excluded from
- * MANAGE_EXTERNAL_STORAGE scope, so we write exclusively to:
- *   /storage/emulated/0/SpyderMusic/headers_auth.json
+ * Storage strategy by API level:
+ *   API 28-29 (Android 9-10)  — WRITE_EXTERNAL_STORAGE, runtime permission
+ *                                requested via registerForActivityResult.
+ *   API 30+   (Android 11+)   — MANAGE_EXTERNAL_STORAGE ("All files access"),
+ *                                directed to system settings page.
  *
- * SpyderMusic's AuthReceiver polls and imports from that path.
+ * Both paths write to /storage/emulated/0/SpyderMusic/headers_auth.json —
+ * the public directory readable by Kodi regardless of Android version.
+ * Direct writes to /Android/data/org.xbmc.kodi/ are not attempted because
+ * they fail on API 30+ even with MANAGE_EXTERNAL_STORAGE.
  *
- * Requires: minSdk 30 (Android 11)
+ * minSdk 28 — supports Nvidia Shield Pro (2019, Android 9) and later.
  */
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        // Public directory accessible to both this app and Kodi on Android 11+.
-        // /Android/data/<other-pkg>/ is excluded from MANAGE_EXTERNAL_STORAGE,
-        // so we never attempt to write directly into Kodi's data directory.
         const val PUBLIC_DIR     = "/storage/emulated/0/SpyderMusic"
         const val PUBLIC_HEADERS = "$PUBLIC_DIR/headers_auth.json"
         const val SENTINEL_FILE  = "$PUBLIC_DIR/.companion_installed"
         const val DEBUG_LOG      = "$PUBLIC_DIR/spyderauth_debug.log"
 
-        // Broadcast the addon listens for
         const val ACTION_AUTH_UPDATED = "com.spydermusic.AUTH_UPDATED"
+        const val TARGET_HOST         = "music.youtube.com"
 
-        // YTMusic API hostname we intercept headers from
-        const val TARGET_HOST = "music.youtube.com"
-
-        // Headers we require in requestHeaders to consider an API call capturable.
-        // 'cookie' is intentionally absent — WebView strips cookies from
-        // requestHeaders; we inject them from CookieManager instead.
+        // Headers we need from the intercepted request.
+        // 'cookie' is absent — WebView strips it from requestHeaders;
+        // we inject it from CookieManager in handleCapturedHeaders().
         val REQUIRED_HEADERS = setOf("x-goog-authuser")
 
-        // Full Chrome UA so YouTube Music serves the full web app
         const val CHROME_UA =
-            "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 " +
+            "Mozilla/5.0 (Linux; Android 9; Pixel 3) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     }
 
@@ -72,6 +74,21 @@ class MainActivity : AppCompatActivity() {
     private var capturedHeaders: Map<String, String>? = null
     private var lastWriteTime: Long = 0
 
+    // Runtime permission launcher for API 28-29
+    private val requestStoragePermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            debugLog("WRITE_EXTERNAL_STORAGE permission result: granted=$granted")
+            if (granted) {
+                writeSentinel()
+            } else {
+                setStatus(
+                    "Storage permission denied.\n" +
+                    "SpyderMusic Auth needs storage access to share cookies with Kodi.",
+                    isError = true
+                )
+            }
+        }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,19 +98,17 @@ class MainActivity : AppCompatActivity() {
         statusCard  = findViewById(R.id.status_card)
         successCard = findViewById(R.id.success_card)
 
-        // Android 11+ (API 30+): set status/nav bar appearance via
-        // WindowInsetsController — the XML style approach still works but
-        // this is the correct API from API 30 onward.
-        window.insetsController?.let { controller ->
-            controller.setSystemBarsAppearance(
-                0,   // dark icons off (we have a dark background)
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        // WindowInsetsController available from API 30+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.setSystemBarsAppearance(
+                0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
             )
         }
 
         debugLog("=== SpyderMusic Auth started (v${BuildConfig.VERSION_NAME}) ===")
-        debugLog("Android API: ${android.os.Build.VERSION.SDK_INT}")
+        debugLog("Android API: ${Build.VERSION.SDK_INT}")
 
         registerBackPressedCallback()
         ensureStoragePermission()
@@ -102,18 +117,12 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://music.youtube.com")
     }
 
-    /**
-     * Use OnBackPressedDispatcher (replaces deprecated onBackPressed override).
-     * Registered once in onCreate — the callback intercepts back presses and
-     * navigates the WebView history before falling through to the system.
-     */
     private fun registerBackPressedCallback() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
                     webView.goBack()
                 } else {
-                    // Disable this callback so the system default (finish) fires
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
                 }
@@ -123,37 +132,54 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // User may have returned from the MANAGE_EXTERNAL_STORAGE settings page
-        if (Environment.isExternalStorageManager()) {
-            debugLog("onResume: isExternalStorageManager=true")
+        if (hasStorageAccess()) {
+            debugLog("onResume: storage access confirmed")
             writeSentinel()
         } else {
-            debugLog("onResume: isExternalStorageManager=false — storage not yet granted")
+            debugLog("onResume: storage access not yet granted")
         }
     }
 
     /**
-     * On Android 11+ the only way to write outside our own sandbox to a shared
-     * public folder is MANAGE_EXTERNAL_STORAGE ("All files access").
-     * Direct the user to the system settings page to grant it.
+     * Returns true if the app has the storage access it needs for the
+     * current API level to write to the public SpyderMusic directory.
      */
-    private fun ensureStoragePermission() {
-        debugLog("ensureStoragePermission: isExternalStorageManager=${Environment.isExternalStorageManager()}")
-        if (Environment.isExternalStorageManager()) {
-            writeSentinel()
+    private fun hasStorageAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
         } else {
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun ensureStoragePermission() {
+        debugLog("ensureStoragePermission: API=${Build.VERSION.SDK_INT} hasAccess=${hasStorageAccess()}")
+
+        if (hasStorageAccess()) {
+            writeSentinel()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // API 30+: direct to MANAGE_EXTERNAL_STORAGE system settings
             setStatus(
                 "SpyderMusic Auth needs 'All files access' to share data with Kodi.\n" +
                 "Tap OK on the next screen to grant it.",
                 isError = false
             )
-            debugLog("ensureStoragePermission: directing user to ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
+            debugLog("Directing to ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
             Handler(Looper.getMainLooper()).postDelayed({
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                     data = Uri.parse("package:$packageName")
                 }
                 startActivity(intent)
             }, 2000)
+        } else {
+            // API 28-29: standard runtime permission request
+            debugLog("Requesting WRITE_EXTERNAL_STORAGE via ActivityResult")
+            requestStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 
@@ -186,19 +212,18 @@ class MainActivity : AppCompatActivity() {
                 val path = request.url.path ?: ""
 
                 if (host.endsWith(TARGET_HOST)) {
-                    val headers  = request.requestHeaders ?: emptyMap()
-                    val lower    = headers.mapKeys { it.key.lowercase() }
-                    val hasReqd  = REQUIRED_HEADERS.all { it in lower }
-                    val isApi    = path.contains("/youtubei/")
+                    val headers = request.requestHeaders ?: emptyMap()
+                    val lower   = headers.mapKeys { it.key.lowercase() }
+                    val hasReqd = REQUIRED_HEADERS.all { it in lower }
+                    val isApi   = path.contains("/youtubei/")
 
                     debugLog("INTERCEPT host=$host path=$path isApi=$isApi hasReqd=$hasReqd headers=${lower.keys}")
 
                     if (isApi && hasReqd) {
-                        debugLog("INTERCEPT match — capturing headers")
+                        debugLog("INTERCEPT match — capturing")
                         handleCapturedHeaders(headers)
                     } else if (isApi) {
-                        val missing = REQUIRED_HEADERS.filter { it !in lower }
-                        debugLog("INTERCEPT api call but missing headers: $missing")
+                        debugLog("INTERCEPT api but missing: ${REQUIRED_HEADERS.filter { it !in lower }}")
                     }
                 }
                 return null
@@ -209,21 +234,24 @@ class MainActivity : AppCompatActivity() {
                 debugLog("PAGE_FINISHED url=$url")
                 if (url.contains(TARGET_HOST)) {
                     val cookieStr = CookieManager.getInstance().getCookie(url)
-                    debugLog("PAGE_FINISHED cookies=${if (cookieStr.isNullOrEmpty()) "NONE" else "present (${cookieStr.length} chars)"}")
+                    debugLog("PAGE_FINISHED cookies=${if (cookieStr.isNullOrEmpty()) "NONE" else "${cookieStr.length} chars"}")
                     if (!cookieStr.isNullOrEmpty() && capturedHeaders == null) {
                         tryBuildFromWebViewCookies(cookieStr, url)
                     }
                 }
             }
 
+            @Suppress("OVERRIDE_DEPRECATION")
             override fun onReceivedError(
                 view: WebView,
-                request: WebResourceRequest,
-                error: WebResourceError
+                errorCode: Int,
+                description: String,
+                failingUrl: String
             ) {
-                super.onReceivedError(view, request, error)
-                // errorCode and description are safe — minSdk 30 >= required API 23
-                debugLog("PAGE_ERROR url=${request.url} code=${error.errorCode} desc=${error.description}")
+                // API 28-compatible override (the RequestResource variant needs API 23,
+                // which we meet, but the String variant is still needed to satisfy the
+                // compiler when targeting API 28 without the newer override).
+                debugLog("PAGE_ERROR code=$errorCode desc=$description url=$failingUrl")
             }
         }
 
@@ -241,14 +269,13 @@ class MainActivity : AppCompatActivity() {
     private fun handleCapturedHeaders(headers: Map<String, String>) {
         val now = System.currentTimeMillis() / 1000
         if (now - lastWriteTime < 60 && capturedHeaders != null) {
-            debugLog("handleCapturedHeaders: skipped (dedup, last write ${now - lastWriteTime}s ago)")
+            debugLog("handleCapturedHeaders: dedup skip (${now - lastWriteTime}s ago)")
             return
         }
 
-        // Inject cookie from CookieManager — WebView never exposes it in requestHeaders
         val cookieStr = CookieManager.getInstance().getCookie("https://music.youtube.com")
         if (cookieStr.isNullOrEmpty()) {
-            debugLog("handleCapturedHeaders: no cookie from CookieManager — skipping")
+            debugLog("handleCapturedHeaders: no cookie — skipping")
             return
         }
 
@@ -258,7 +285,7 @@ class MainActivity : AppCompatActivity() {
         lastWriteTime   = now
         capturedHeaders = merged
 
-        debugLog("handleCapturedHeaders: writing ${merged.size} headers (cookie injected, ${cookieStr.length} chars): ${merged.keys}")
+        debugLog("handleCapturedHeaders: ${merged.size} headers (${cookieStr.length} char cookie): ${merged.keys}")
 
         val sb = StringBuilder()
         for ((k, v) in merged) sb.append("$k: $v\n")
@@ -268,10 +295,10 @@ class MainActivity : AppCompatActivity() {
     private fun tryBuildFromWebViewCookies(cookieStr: String, url: String) {
         val now = System.currentTimeMillis() / 1000
         if (now - lastWriteTime < 60) {
-            debugLog("tryBuildFromWebViewCookies: skipped (dedup)")
+            debugLog("tryBuildFromWebViewCookies: dedup skip")
             return
         }
-        debugLog("tryBuildFromWebViewCookies: building minimal headers from cookies (${cookieStr.length} chars)")
+        debugLog("tryBuildFromWebViewCookies: ${cookieStr.length} chars")
 
         val uri    = Uri.parse(url)
         val origin = "${uri.scheme}://${uri.host}"
@@ -293,12 +320,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun writeHeadersFile(rawHeaders: String, headers: Map<String, String>) {
-        if (!Environment.isExternalStorageManager()) {
-            debugLog("writeHeadersFile: BLOCKED — MANAGE_EXTERNAL_STORAGE not granted")
+        if (!hasStorageAccess()) {
+            debugLog("writeHeadersFile: BLOCKED — no storage permission")
             runOnUiThread {
                 setStatus(
                     "Storage permission not granted.\n" +
-                    "Reopen the app and allow 'All files access' to continue.",
+                    "Restart the app and grant storage access to continue.",
                     isError = true
                 )
             }
@@ -306,27 +333,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            // Write to the shared public directory. On Android 11+,
-            // MANAGE_EXTERNAL_STORAGE grants access here but NOT to
-            // /Android/data/<other-pkg>/ — so this is the only viable path.
             val publicFile = File(PUBLIC_HEADERS)
             publicFile.parentFile?.mkdirs()
             publicFile.writeText(rawHeaders, Charsets.UTF_8)
             debugLog("writeHeadersFile: wrote ${publicFile.absolutePath} (${rawHeaders.length} bytes)")
 
-            // Metadata sidecar
             val meta = JSONObject().apply {
                 put("written_at",   System.currentTimeMillis() / 1000)
                 put("written_by",   "SpyderMusicAuth")
                 put("app_version",  BuildConfig.VERSION_NAME)
                 put("header_count", headers.size)
+                put("android_api",  Build.VERSION.SDK_INT)
             }
             File(publicFile.parent, "auth_meta.json").writeText(meta.toString(2))
             debugLog("writeHeadersFile: meta written")
 
             sendAuthBroadcast(publicFile.absolutePath)
-            debugLog("writeHeadersFile: broadcast sent")
-
             runOnUiThread { showSuccess() }
 
         } catch (e: Exception) {
@@ -336,35 +358,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendAuthBroadcast(headersPath: String) {
-        // Target Kodi explicitly — satisfies Android 14+ explicit broadcast rules
-        // for cross-app custom-action intents. Kodi may not be running; the file
-        // write is sufficient, and the addon will detect it on next launch.
+        // Explicit package target satisfies Android 14+ cross-app broadcast rules.
+        // Safe to call even if Kodi is not running — the file write is sufficient.
         val intent = Intent(ACTION_AUTH_UPDATED).apply {
             putExtra("headers_path", headersPath)
             putExtra("timestamp",    System.currentTimeMillis() / 1000)
             setPackage("org.xbmc.kodi")
         }
-        try {
-            sendBroadcast(intent)
-        } catch (_: Exception) {}
+        try { sendBroadcast(intent) } catch (_: Exception) {}
     }
 
-    /** Write a timestamped line to spyderauth_debug.log. Thread-safe, fails silently. */
     private fun debugLog(msg: String) {
         try {
             val ts   = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            val line = "$ts  $msg\n"
             val f    = File(DEBUG_LOG)
             f.parentFile?.mkdirs()
-            FileWriter(f, true).use { it.write(line) }
+            FileWriter(f, true).use { it.write("$ts  $msg\n") }
         } catch (_: Exception) {}
     }
 
-    /**
-     * Write a presence sentinel so Kodi's companion_app_installed() can detect us.
-     * /storage/emulated/0/SpyderMusic/ is visible to both apps on Android 11+
-     * (unlike /Android/data/<pkg>/ which is scoped).
-     */
     private fun writeSentinel() {
         try {
             val f = File(SENTINEL_FILE)
@@ -372,8 +384,6 @@ class MainActivity : AppCompatActivity() {
             if (!f.exists()) {
                 f.createNewFile()
                 debugLog("SENTINEL written: $SENTINEL_FILE")
-            } else {
-                debugLog("SENTINEL already exists: $SENTINEL_FILE")
             }
         } catch (e: Exception) {
             debugLog("SENTINEL write FAILED: $e")

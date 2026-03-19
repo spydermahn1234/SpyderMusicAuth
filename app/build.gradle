@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId      "com.spydermusic.auth"
-        minSdk             30   // Android 11 minimum
+        minSdk             28   // Android 9+ (supports Shield Pro 2019 and later)
         targetSdk          34
         versionCode        1
         versionName        "1.0.0"

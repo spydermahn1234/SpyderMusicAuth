@@ -2,9 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- MANAGE_EXTERNAL_STORAGE is required to write to the shared SpyderMusic
-         public directory on Android 11+. The user is directed to the system
-         "All files access" settings page the first time the app launches. -->
+    <!-- API 28-29 (Android 9-10): WRITE_EXTERNAL_STORAGE grants access to
+         shared public directories via the legacy storage model. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- API 30+ (Android 11+): MANAGE_EXTERNAL_STORAGE ("All files access")
+         required for shared public directory writes under scoped storage.
+         The user is directed to the system settings page on first launch. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
