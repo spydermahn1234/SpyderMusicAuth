@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId      "com.spydermusic.auth"
-        minSdk             21
+        minSdk             30   // Android 11 minimum
         targetSdk          34
         versionCode        1
         versionName        "1.0.0"

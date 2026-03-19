@@ -2,11 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <!-- Android 13+ scoped storage — we need access to Kodi's data dir -->
+    <!-- MANAGE_EXTERNAL_STORAGE is required to write to the shared SpyderMusic
+         public directory on Android 11+. The user is directed to the system
+         "All files access" settings page the first time the app launches. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
@@ -24,7 +22,9 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

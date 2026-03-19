@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
+    <!--
+        Theme.AppCompat.NoActionBar used for broad compatibility.
+        Status/nav bar colours and light/dark appearance are set
+        programmatically via WindowInsetsController in MainActivity
+        (the correct API from Android 11 / API 30 onward).
+    -->
     <style name="Theme.SpyderMusicAuth" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">#0A0A0A</item>
+        <!-- statusBarColor / navigationBarColor set in code via WindowInsetsController -->
         <item name="android:statusBarColor">#000000</item>
         <item name="android:navigationBarColor">#000000</item>
+        <!-- Dark status/nav bar — icons are light (white) on dark background -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="colorPrimary">#FF4444</item>
-        <item name="colorPrimaryDark">#CC0000</item>
         <item name="colorAccent">#FF4444</item>
     </style>
 
