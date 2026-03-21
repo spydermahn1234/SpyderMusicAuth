@@ -11,8 +11,8 @@ android {
         applicationId      "com.spydermusic.auth"
         minSdk             21   // Covers all Shield TV firmware versions (2015-present)
         targetSdk          34
-        versionCode        2
-        versionName        "1.1.0"
+        versionCode        3
+        versionName        "1.2.0"
     }
 
     buildTypes {
@@ -53,4 +53,9 @@ dependencies {
     // work-runtime-ktx pulls in work-runtime and coroutines-android.
     // Pin to 2.9.x which is the last version supporting minSdk 21.
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
+
+    // MediaSession — lock screen / Bluetooth transport controls (MediaSessionManager).
+    // androidx.media:media supersedes the deprecated support library MediaSession.
+    // 1.7.0 is the last version with minSdk 21 support.
+    implementation 'androidx.media:media:1.7.0'
 }

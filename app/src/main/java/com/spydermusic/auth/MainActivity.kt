@@ -256,6 +256,22 @@ class MainActivity : AppCompatActivity() {
         // FIX #9: content description for TalkBack.
         webView.contentDescription = "YouTube Music"
 
+        // Inject Cast-to-Kodi JavaScript interface.
+        // The interface is added before loadUrl() so it is available as soon as
+        // the first page's JS executes.  The cast button injection script itself
+        // waits for the DOM to settle (rAF + MutationObserver) so there is no
+        // timing issue with early injection.
+        val castInterface = CastJavascriptInterface { videoId, title, artist ->
+            // Called on a WebView thread — POST to HTTP server which invokes
+            // SpyderMusicApplication.castCallback → CastToKodi.play() on the
+            // same thread (all loopback, synchronous, <3 s timeout).
+            (application as? SpyderMusicApplication)?.httpServer?.castCallback?.invoke(
+                CompanionHttpServer.CastPayload(videoId, title, artist)
+            )
+            debugLog("Cast requested: videoId=$videoId title=$title artist=$artist")
+        }
+        webView.addJavascriptInterface(castInterface, CastJavascriptInterface.INTERFACE_NAME)
+
         webView.settings.apply {
             javaScriptEnabled  = true
             domStorageEnabled  = true
@@ -309,6 +325,9 @@ class MainActivity : AppCompatActivity() {
                     if (!cookieStr.isNullOrEmpty() && capturedHeaders == null) {
                         tryBuildFromWebViewCookies(cookieStr, url)
                     }
+                    // Re-inject Cast buttons on every page load (YTMusic SPA
+                    // re-renders the DOM on navigation without firing a new load).
+                    view.evaluateJavascript(CastJavascriptInterface.CAST_JS, null)
                 }
             }
 

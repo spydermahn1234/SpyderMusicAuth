@@ -48,6 +48,30 @@ class CompanionHttpServer(private val port: Int = 52080) {
     private val _rawHeaders    = AtomicReference<String?>(null)
     private val _lastCaptured  = AtomicLong(0L)           // epoch seconds
     private val _refreshCount  = AtomicInteger(0)
+
+    // Now Playing state — set by POST /nowplaying from the Kodi addon
+    @Volatile var nowPlayingCallback: ((NowPlayingPayload) -> Unit)? = null
+
+    data class NowPlayingPayload(
+        val videoId:  String,
+        val title:    String,
+        val artist:   String,
+        val album:    String,
+        val duration: Long,        // seconds
+        val thumbnail:String,
+        val playing:  Boolean,
+        val position: Double,      // seconds
+        val clear:    Boolean      // true = stop / clear media session
+    )
+
+    // Cast-to-Kodi callback — invoked when POST /cast arrives from MainActivity
+    @Volatile var castCallback: ((CastPayload) -> Unit)? = null
+
+    data class CastPayload(
+        val videoId: String,
+        val title:   String,
+        val artist:  String
+    )
     @Volatile private var isRunning = false
 
     private var serverSocket: ServerSocket? = null
@@ -134,6 +158,16 @@ class CompanionHttpServer(private val port: Int = 52080) {
                 line = reader.readLine()
             }
 
+            if (method == "POST" && path == "/nowplaying") {
+                serveNowPlayingPost(reader, writer)
+                return
+            }
+
+            if (method == "POST" && path == "/cast") {
+                serveCastPost(reader, writer)
+                return
+            }
+
             if (method != "GET") { sendError(writer, 405, "Method Not Allowed"); return }
 
             when (path) {
@@ -173,6 +207,68 @@ class CompanionHttpServer(private val port: Int = 52080) {
             put("refresh_count", _refreshCount.get())
         }.toString()
         sendJson(writer, 200, body)
+    }
+
+    private fun serveCastPost(reader: BufferedReader, writer: PrintWriter) {
+        val bodyChars = StringBuilder()
+        try { while (reader.ready()) { val ch = reader.read(); if (ch == -1) break; bodyChars.append(ch.toChar()) } }
+        catch (_: Exception) {}
+        val body = bodyChars.toString().trim()
+        if (body.isEmpty()) { sendError(writer, 400, "Empty body"); return }
+        try {
+            val j = JSONObject(body)
+            val payload = CastPayload(
+                videoId = j.optString("video_id", ""),
+                title   = j.optString("title",    ""),
+                artist  = j.optString("artist",   ""),
+            )
+            if (payload.videoId.isBlank()) { sendError(writer, 400, "Missing video_id"); return }
+            castCallback?.invoke(payload)
+            sendJson(writer, 200, """{"ok":true}""")
+        } catch (e: Exception) {
+            sendError(writer, 400, "Bad JSON: ${e.message}")
+        }
+    }
+
+    private fun serveNowPlayingPost(reader: BufferedReader, writer: PrintWriter) {
+        // Read Content-Length header (already consumed request line + headers above;
+        // we need the body).  Re-read using a fixed-length approach: read chars until
+        // no more data arrives within the connection timeout.
+        val bodyChars = StringBuilder()
+        try {
+            while (reader.ready()) {
+                val ch = reader.read()
+                if (ch == -1) break
+                bodyChars.append(ch.toChar())
+            }
+        } catch (_: Exception) {}
+
+        val body = bodyChars.toString().trim()
+        if (body.isEmpty()) { sendError(writer, 400, "Empty body"); return }
+
+        try {
+            val j       = JSONObject(body)
+            val clear   = j.optBoolean("clear", false)
+            val playing = j.optBoolean("playing", false)
+
+            val payload = NowPlayingPayload(
+                videoId   = j.optString("video_id",  ""),
+                title     = j.optString("title",     ""),
+                artist    = j.optString("artist",    ""),
+                album     = j.optString("album",     ""),
+                duration  = j.optLong("duration",    0L),
+                thumbnail = j.optString("thumbnail", ""),
+                playing   = playing,
+                position  = j.optDouble("position",  0.0),
+                clear     = clear,
+            )
+
+            nowPlayingCallback?.invoke(payload)
+            sendJson(writer, 200, """{"ok":true}""")
+        } catch (e: Exception) {
+            android.util.Log.w("SpyderHttpServer", "POST /nowplaying parse error: $e")
+            sendError(writer, 400, "Bad JSON: ${e.message}")
+        }
     }
 
     // ── HTTP response helpers ─────────────────────────────────────────────────
