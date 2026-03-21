@@ -65,12 +65,20 @@ class MainActivity : AppCompatActivity() {
         // injected from CookieManager in handleCapturedHeaders().
         val REQUIRED_HEADERS = setOf("x-goog-authuser")
 
-        // Desktop Chrome UA — forces YTMusic to serve the full web layout which uses
-        // ytmusic-responsive-list-item-renderer (required for Cast button injection).
-        // The mobile UA serves a lighter SPA whose element tree is harder to target.
-        const val CHROME_UA =
+        // Mobile UA — used for accounts.google.com sign-in.
+        // Google blocks sign-in when it detects a non-standard desktop UA in a WebView.
+        const val CHROME_UA_MOBILE =
+            "Mozilla/5.0 (Linux; Android 9; Pixel 3) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+        // Desktop UA — used for music.youtube.com to get the full web layout
+        // which uses ytmusic-responsive-list-item-renderer (required for Cast injection).
+        const val CHROME_UA_DESKTOP =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        // Default UA (mobile) — CookieRefreshService uses this via MainActivity.CHROME_UA
+        const val CHROME_UA = CHROME_UA_MOBILE
     }
 
     private lateinit var webView: WebView
@@ -283,7 +291,7 @@ class MainActivity : AppCompatActivity() {
             // FIX #15: removed loadWithOverviewMode + useWideViewPort — the mobile
             // UA already causes YTMusic to serve a mobile layout sized for the viewport.
             // These settings caused a slightly zoomed-out initial render on some devices.
-            userAgentString    = CHROME_UA
+            userAgentString    = CHROME_UA_MOBILE  // onPageStarted switches to desktop for music.youtube.com
         }
 
         CookieManager.getInstance().apply {
@@ -292,6 +300,26 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // Switch UA based on domain so Google sign-in works (requires mobile UA)
+                // while music.youtube.com gets the desktop layout for Cast button injection.
+                val targetUA = if (url.contains("accounts.google.com") ||
+                                   url.contains("accounts.youtube.com"))
+                    CHROME_UA_MOBILE else CHROME_UA_DESKTOP
+                if (view.settings.userAgentString != targetUA) {
+                    view.settings.userAgentString = targetUA
+                    // Guard: only reload if we haven't just reloaded for this URL,
+                    // preventing the reload from triggering another reload loop.
+                    val lastReloadKey = "_spyderLastReload"
+                    val tag = view.getTag(R.id.webview) as? String
+                    if (tag != url) {
+                        view.setTag(R.id.webview, url)
+                        view.reload()
+                    }
+                }
+            }
 
             override fun shouldInterceptRequest(
                 view: WebView,
