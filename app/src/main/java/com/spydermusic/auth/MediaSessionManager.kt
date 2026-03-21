@@ -39,6 +39,14 @@ class MediaSessionManager(private val context: Context) {
         private const val KODI_PORT    = 8080
         private const val KODI_JSONRPC = "http://$KODI_HOST:$KODI_PORT/jsonrpc"
         private const val HTTP_TIMEOUT = 2000   // ms — loopback, so short is fine
+
+        val ALL_TRANSPORT_ACTIONS =
+            PlaybackStateCompat.ACTION_PLAY         or
+            PlaybackStateCompat.ACTION_PAUSE        or
+            PlaybackStateCompat.ACTION_PLAY_PAUSE   or
+            PlaybackStateCompat.ACTION_STOP         or
+            PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
     }
 
     private val session: MediaSessionCompat = MediaSessionCompat(context, SESSION_TAG)
@@ -215,15 +223,5 @@ class MediaSessionManager(private val context: Context) {
             Log.d(TAG, "Thumbnail fetch failed ($url): $e")
             null
         }
-    }
-
-    private companion object {
-        val ALL_TRANSPORT_ACTIONS =
-            PlaybackStateCompat.ACTION_PLAY         or
-            PlaybackStateCompat.ACTION_PAUSE        or
-            PlaybackStateCompat.ACTION_PLAY_PAUSE   or
-            PlaybackStateCompat.ACTION_STOP         or
-            PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
     }
 }
