@@ -17,6 +17,15 @@
          the system "All files access" settings page on first launch. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!--
+        SHIELD TV FIX: Shield TV has no touchscreen. Without this declaration,
+        Android's package manager rejects any APK that implicitly requires
+        android.hardware.touchscreen — which all apps do by default.
+        Setting required="false" allows installation and sideloading on Shield
+        and other Android TV devices, while still working normally on phones/tablets.
+    -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -43,6 +52,18 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                SHIELD TV FIX: LEANBACK_LAUNCHER makes the app appear in the
+                Shield / Android TV app drawer after installation.  Without it
+                the app installs but is invisible in the launcher — users can
+                only open it via the deep link from Kodi (spydermusic://auth),
+                which works, but makes first-run setup confusing.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
 
             <!-- Deep link from Kodi: spydermusic://auth -->
