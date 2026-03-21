@@ -22,8 +22,11 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            applicationIdSuffix ".debug"
+            // No applicationIdSuffix — keeps package ID as com.spydermusic.auth
+            // so the debug APK integrates with Kodi/SpyderMusic identically to release.
+            // Uninstall before switching between debug and release builds.
             versionNameSuffix   "-debug"
+            debuggable true
         }
     }
 
