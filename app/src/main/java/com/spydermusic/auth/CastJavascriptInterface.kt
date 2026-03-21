@@ -40,79 +40,82 @@ class CastJavascriptInterface(
          */
         val CAST_JS = """
 (function() {
-  if (window._spyderCastInjected) return;
-  window._spyderCastInjected = true;
+  const CAST_BTN_CLASS = '_spyderCastBtn';
 
-  const CAST_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
-    width="20" height="20" fill="none" stroke="#FF4444" stroke-width="2"
-    style="cursor:pointer;margin-left:8px;vertical-align:middle;flex-shrink:0"
-    title="Cast to Kodi">
-    <path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>
-    <line x1="2" y1="20" x2="2.01" y2="20"/>
-  </svg>`;
+  const CAST_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ' +
+    'width="18" height="18" fill="none" stroke="#FF4444" stroke-width="2.2" ' +
+    'style="cursor:pointer;margin-left:6px;vertical-align:middle;flex-shrink:0;opacity:0.9" ' +
+    'title="Cast to Kodi">' +
+    '<path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>' +
+    '<line x1="2" y1="20" x2="2.01" y2="20"/></svg>';
 
-  function extractVideoId(el) {
-    // Try data-videoid attribute first (most reliable)
-    let vid = el.closest('[data-videoid]')?.dataset?.videoid;
-    if (vid) return vid;
-    // Fallback: parse from any nearby <a> href containing watch?v=
-    const a = el.closest('ytmusic-responsive-list-item-renderer,ytmusic-player-bar')
-               ?.querySelector('a[href*="watch?v="]');
-    if (a) {
-      const m = a.href.match(/[?&]v=([^&]+)/);
-      if (m) return m[1];
+  function extractVideoId(row) {
+    // 1. data attribute set by YTMusic desktop on the row itself or parent
+    let el = row.closest('[data-videoid]');
+    if (el) return el.dataset.videoid;
+    // 2. href on a watch link inside the row
+    const a = row.querySelector('a[href*="watch?v="]');
+    if (a) { const m = a.href.match(/[?&]v=([^&]+)/); if (m) return m[1]; }
+    // 3. YTMusic stores videoId in the renderer's data attribute under various names
+    const r = row.closest('ytmusic-responsive-list-item-renderer');
+    if (r) {
+      const id = r.getAttribute('data-videoid') || r.getAttribute('videoid');
+      if (id) return id;
     }
     return null;
   }
 
-  function extractMeta(container) {
-    const titleEl  = container.querySelector('.title, .song-title, [class*="title"]');
-    const artistEl = container.querySelector('.secondary-flex-columns a, [class*="artist"]');
+  function extractMeta(row) {
+    const r = row.closest('ytmusic-responsive-list-item-renderer') || row;
+    const titleEl  = r.querySelector('.title, yt-formatted-string.title, [class*="title"]');
+    const artistEl = r.querySelector('.secondary-flex-columns a, yt-formatted-string[class*="subtitle"] a');
     return {
-      title:  titleEl?.textContent?.trim()  || '',
-      artist: artistEl?.textContent?.trim() || '',
+      title:  (titleEl  && titleEl.textContent.trim())  || '',
+      artist: (artistEl && artistEl.textContent.trim()) || '',
     };
   }
 
-  function attachCastButton(container) {
-    if (container.querySelector('._spyderCastBtn')) return; // already attached
-    const wrapper = document.createElement('span');
-    wrapper.className = '_spyderCastBtn';
-    wrapper.innerHTML = CAST_SVG;
-    wrapper.addEventListener('click', function(e) {
+  function attachCastButton(row) {
+    if (row.querySelector('.' + CAST_BTN_CLASS)) return;
+    // Find the three-dot overflow menu button — insert the cast button right before it
+    const menuBtn = row.querySelector('ytmusic-menu-renderer, .menu, tp-yt-paper-icon-button');
+    if (!menuBtn) return;  // row not fully rendered yet — MutationObserver will retry
+
+    const span = document.createElement('span');
+    span.className = CAST_BTN_CLASS;
+    span.innerHTML = CAST_SVG;
+    span.style.cssText = 'display:inline-flex;align-items:center;';
+    span.addEventListener('click', function(e) {
       e.stopPropagation();
       e.preventDefault();
-      const vid = extractVideoId(container);
-      if (!vid) { console.warn('[SpyderCast] Could not extract videoId'); return; }
-      const { title, artist } = extractMeta(container);
-      if (window.SpyderCast) {
-        window.SpyderCast.castToKodi(vid, title, artist);
-      }
+      const vid = extractVideoId(span);
+      if (!vid) { console.warn('[SpyderCast] No videoId on row'); return; }
+      const { title, artist } = extractMeta(span);
+      if (window.SpyderCast) window.SpyderCast.castToKodi(vid, title, artist);
     });
-    // Insert into the action/menu row so it sits next to the existing icons
-    const actionRow = container.querySelector('.menu, [class*="action"], [class*="button-row"]');
-    if (actionRow) {
-      actionRow.appendChild(wrapper);
-    } else {
-      container.appendChild(wrapper);
-    }
+
+    // Insert before the three-dot menu
+    menuBtn.parentNode.insertBefore(span, menuBtn);
   }
 
-  function injectButtons() {
-    document.querySelectorAll(
-      'ytmusic-responsive-list-item-renderer, ytmusic-player-bar'
-    ).forEach(attachCastButton);
+  function injectAll() {
+    document.querySelectorAll('ytmusic-responsive-list-item-renderer').forEach(attachCastButton);
+    // Also inject into the now-playing footer bar
+    document.querySelectorAll('ytmusic-player-bar').forEach(attachCastButton);
   }
 
-  // Initial injection after a short settle
-  setTimeout(injectButtons, 1200);
+  // Run after a settle (content loads async)
+  setTimeout(injectAll, 1500);
 
-  // Re-inject on DOM mutations (SPA navigation updates the track list in place)
-  const observer = new MutationObserver(function() {
-    clearTimeout(window._spyderCastDebounce);
-    window._spyderCastDebounce = setTimeout(injectButtons, 400);
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
+  // Re-run on every DOM change (SPA navigation replaces track lists in-place).
+  // Use a short debounce to batch rapid mutations during list rendering.
+  if (!window._spyderCastObserver) {
+    window._spyderCastObserver = new MutationObserver(function() {
+      clearTimeout(window._spyderCastTimer);
+      window._spyderCastTimer = setTimeout(injectAll, 600);
+    });
+    window._spyderCastObserver.observe(document.body, { childList: true, subtree: true });
+  }
 })();
 """.trimIndent()
     }

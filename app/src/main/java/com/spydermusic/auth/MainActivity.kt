@@ -65,9 +65,12 @@ class MainActivity : AppCompatActivity() {
         // injected from CookieManager in handleCapturedHeaders().
         val REQUIRED_HEADERS = setOf("x-goog-authuser")
 
+        // Desktop Chrome UA — forces YTMusic to serve the full web layout which uses
+        // ytmusic-responsive-list-item-renderer (required for Cast button injection).
+        // The mobile UA serves a lighter SPA whose element tree is harder to target.
         const val CHROME_UA =
-            "Mozilla/5.0 (Linux; Android 9; Pixel 3) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     private lateinit var webView: WebView
