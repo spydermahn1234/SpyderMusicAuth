@@ -24,6 +24,9 @@ import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
@@ -53,6 +56,10 @@ class MainActivity : AppCompatActivity() {
 
         const val ACTION_AUTH_UPDATED = "com.spydermusic.AUTH_UPDATED"
         const val TARGET_HOST         = "music.youtube.com"
+
+        // UDP port on which credentials are broadcast to all Kodi instances
+        // on the local network (e.g. Shield TV on a different device).
+        const val UDP_BROADCAST_PORT  = 8765
 
         // 'cookie' excluded — WebView strips it from requestHeaders;
         // injected from CookieManager in handleCapturedHeaders().
@@ -123,6 +130,15 @@ class MainActivity : AppCompatActivity() {
         registerBackPressedCallback()
         ensureStoragePermission()
         setupWebView()
+
+        // Start the local HTTP server so Kodi can poll credentials without
+        // filesystem races.  The server is owned by SpyderMusicApplication and
+        // survives Activity recreation — start() is idempotent.
+        (application as? SpyderMusicApplication)?.httpServer?.start()
+
+        // Schedule proactive 6-hourly cookie refresh via WorkManager.
+        // Idempotent — KEEP policy means a second call here has no effect.
+        CookieRefreshWorker.schedule(this)
 
         webView.loadUrl("https://music.youtube.com")
     }
@@ -395,6 +411,15 @@ class MainActivity : AppCompatActivity() {
             File(f.parent, "auth_meta.json").writeText(meta.toString(2))
 
             sendAuthBroadcast(f.absolutePath)
+            sendNetworkBroadcast(rawHeaders)
+
+            // Update the local HTTP server so Kodi can fetch fresh credentials
+            // without waiting for a file-mtime change (eliminates filesystem race).
+            (application as? SpyderMusicApplication)?.httpServer?.updateHeaders(
+                rawHeaders,
+                System.currentTimeMillis() / 1000
+            )
+
             runOnUiThread { showSuccess() }
         } catch (e: Exception) {
             debugLog("writeHeadersFile: EXCEPTION — $e")
@@ -409,6 +434,51 @@ class MainActivity : AppCompatActivity() {
             setPackage("org.xbmc.kodi")
         }
         try { sendBroadcast(intent) } catch (_: Exception) {}
+    }
+
+    /**
+     * UDP network broadcast — sends raw header text to all devices on the local
+     * network listening on UDP_BROADCAST_PORT (8765).
+     *
+     * This allows a Kodi instance on a *different device* (e.g. Shield TV) to
+     * receive credentials captured on this phone.  The Kodi service's
+     * AuthBroadcastMonitor listens on the same port and writes the payload to
+     * its local headers_auth.json, triggering the normal file-based auth flow.
+     *
+     * Payload format — a single JSON object:
+     *   { "v": 1, "ts": <epoch_seconds>, "headers": "<raw header text>" }
+     *
+     * The raw header text is the same "name: value\n" format written to disk.
+     * Runs on the log executor (background thread) so it never blocks the UI.
+     */
+    private fun sendNetworkBroadcast(rawHeaders: String) {
+        logExecutor.execute {
+            try {
+                val payload = JSONObject().apply {
+                    put("v",       1)
+                    put("ts",      System.currentTimeMillis() / 1000)
+                    put("headers", rawHeaders)
+                }.toString()
+
+                val bytes = payload.toByteArray(Charsets.UTF_8)
+
+                // Cap at 60 KB — UDP practical limit; headers are typically ~4 KB
+                if (bytes.size > 61440) {
+                    debugLog("sendNetworkBroadcast: payload too large (${bytes.size} bytes) — skipping")
+                    return@execute
+                }
+
+                DatagramSocket().use { socket ->
+                    socket.broadcast = true
+                    val addr   = InetAddress.getByName("255.255.255.255")
+                    val packet = DatagramPacket(bytes, bytes.size, addr, UDP_BROADCAST_PORT)
+                    socket.send(packet)
+                }
+                debugLog("sendNetworkBroadcast: sent ${bytes.size} bytes to 255.255.255.255:$UDP_BROADCAST_PORT")
+            } catch (e: Exception) {
+                debugLog("sendNetworkBroadcast: EXCEPTION — $e")
+            }
+        }
     }
 
     /**
@@ -469,6 +539,10 @@ class MainActivity : AppCompatActivity() {
         // FIX #5: cancel pending success-hide timer so it cannot fire on a destroyed activity.
         mainHandler.removeCallbacks(hideSuccessRunnable)
         logExecutor.shutdown()
+        // NOTE: do NOT stop httpServer here — the server is owned by SpyderMusicApplication
+        // and must survive Activity recreation (rotation, backgrounding).  The OS will
+        // terminate it when the process dies.  onDestroy() fires on rotation; stopping
+        // the server here would make Kodi's poll fail every time the screen rotates.
         webView.destroy()
         super.onDestroy()
     }
