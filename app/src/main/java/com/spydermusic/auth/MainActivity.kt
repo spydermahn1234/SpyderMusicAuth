@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +14,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.webkit.*
+import android.widget.Button
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +26,7 @@ import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.Executors
 
 /**
  * SpyderMusic Auth — companion app for SpyderMusic Kodi addon.
@@ -63,9 +67,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var statusCard: View
     private lateinit var successCard: View
+    private lateinit var loadingBar: ProgressBar
+    private lateinit var grantAccessButton: Button
 
     private var capturedHeaders: Map<String, String>? = null
     private var lastWriteTime: Long = 0
+
+    // FIX #5: single Handler instance so postDelayed callbacks can be cancelled in onDestroy.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val hideSuccessRunnable = Runnable {
+        successCard.visibility = View.GONE
+        statusCard.visibility  = View.VISIBLE
+        setStatus("Session saved ✓  You can close this app", isError = false)
+    }
+
+    // FIX #10: single-threaded executor for all disk log writes — serialises
+    // concurrent calls from shouldInterceptRequest (WebView IO thread) and main thread.
+    private val logExecutor = Executors.newSingleThreadExecutor()
 
     // Runtime permission launcher (API 23+, used for API 23-29)
     private val requestWritePermission =
@@ -87,11 +105,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        statusText  = findViewById(R.id.status_text)
-        statusCard  = findViewById(R.id.status_card)
-        successCard = findViewById(R.id.success_card)
+        statusText        = findViewById(R.id.status_text)
+        statusCard        = findViewById(R.id.status_card)
+        successCard       = findViewById(R.id.success_card)
+        loadingBar        = findViewById(R.id.loading_bar)
+        grantAccessButton = findViewById(R.id.grant_access_button)
 
-        // Status/nav bar appearance — API 30+ only, guarded at call site
+        // FIX #1: wire version label to BuildConfig — never stale.
+        findViewById<TextView>(R.id.version_text).text = "v${BuildConfig.VERSION_NAME}"
+
+        // Status/nav bar appearance — API 30+ only, guarded at call site.
         applyWindowInsets()
 
         debugLog("=== SpyderMusic Auth started (v${BuildConfig.VERSION_NAME}) ===")
@@ -136,13 +159,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // User may have returned from the MANAGE_EXTERNAL_STORAGE settings screen
+        // FIX #8: resume WebView internal timers and compositing threads.
+        webView.onResume()
+        // User may have returned from the MANAGE_EXTERNAL_STORAGE settings screen.
         if (hasStorageAccess()) {
             debugLog("onResume: storage access OK")
+            grantAccessButton.visibility = View.GONE
             writeSentinel()
         } else {
             debugLog("onResume: storage access not yet granted (API ${Build.VERSION.SDK_INT})")
         }
+    }
+
+    override fun onPause() {
+        // FIX #8: pause WebView to stop JS timers and compositing while backgrounded.
+        webView.onPause()
+        super.onPause()
     }
 
     /**
@@ -171,20 +203,22 @@ class MainActivity : AppCompatActivity() {
         }
         when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
-                // API 30+: send to system "All files access" settings
+                // FIX #4: show a "Grant Access" button instead of auto-redirecting
+                // after an arbitrary delay. User controls when they leave the screen.
                 setStatus(
-                    "SpyderMusic Auth needs 'All files access' to share data with Kodi.\n" +
-                    "Tap OK on the next screen to grant it.",
+                    "SpyderMusic Auth needs 'All files access' to share data with Kodi.",
                     isError = false
                 )
-                debugLog("Directing to ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
-                Handler(Looper.getMainLooper()).postDelayed({
+                debugLog("Showing Grant Access button for ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
+                grantAccessButton.visibility = View.VISIBLE
+                grantAccessButton.setOnClickListener {
+                    grantAccessButton.visibility = View.GONE
                     startActivity(
                         Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                             data = Uri.parse("package:$packageName")
                         }
                     )
-                }, 2000)
+                }
             }
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
                 // API 23-29: standard runtime permission request
@@ -203,14 +237,18 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         webView = findViewById(R.id.webview)
 
+        // FIX #9: content description for TalkBack.
+        webView.contentDescription = "YouTube Music"
+
         webView.settings.apply {
-            javaScriptEnabled    = true
-            domStorageEnabled    = true
-            databaseEnabled      = true
-            allowContentAccess   = true
-            loadWithOverviewMode = true
-            useWideViewPort      = true
-            userAgentString      = CHROME_UA
+            javaScriptEnabled  = true
+            domStorageEnabled  = true
+            databaseEnabled    = true
+            allowContentAccess = true
+            // FIX #15: removed loadWithOverviewMode + useWideViewPort — the mobile
+            // UA already causes YTMusic to serve a mobile layout sized for the viewport.
+            // These settings caused a slightly zoomed-out initial render on some devices.
+            userAgentString    = CHROME_UA
         }
 
         CookieManager.getInstance().apply {
@@ -228,17 +266,20 @@ class MainActivity : AppCompatActivity() {
                 val path = request.url.path ?: ""
 
                 if (host.endsWith(TARGET_HOST)) {
-                    val headers = request.requestHeaders ?: emptyMap()
-                    val lower   = headers.mapKeys { it.key.lowercase() }
-                    val hasReqd = REQUIRED_HEADERS.all { it in lower }
-                    val isApi   = path.contains("/youtubei/")
-
-                    debugLog("INTERCEPT host=$host isApi=$isApi hasReqd=$hasReqd headers=${lower.keys}")
-
-                    if (isApi && hasReqd) {
-                        handleCapturedHeaders(headers)
-                    } else if (isApi) {
-                        debugLog("INTERCEPT missing: ${REQUIRED_HEADERS.filter { it !in lower }}")
+                    val isApi = path.contains("/youtubei/")
+                    // FIX #11: only log API-path requests — non-API requests (images,
+                    // fonts, static assets) fire dozens of times per second and would
+                    // flood the log and thrash the disk.
+                    if (isApi) {
+                        val headers = request.requestHeaders ?: emptyMap()
+                        val lower   = headers.mapKeys { it.key.lowercase() }
+                        val hasReqd = REQUIRED_HEADERS.all { it in lower }
+                        debugLog("INTERCEPT isApi=true hasReqd=$hasReqd headers=${lower.keys}")
+                        if (hasReqd) {
+                            handleCapturedHeaders(headers)
+                        } else {
+                            debugLog("INTERCEPT missing: ${REQUIRED_HEADERS.filter { it !in lower }}")
+                        }
                     }
                 }
                 return null
@@ -269,10 +310,19 @@ class MainActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
-                if (newProgress < 100) {
-                    setStatus("Loading… $newProgress%", isError = false)
-                } else {
-                    setStatus("Sign in to YouTube Music, then play any song", isError = false)
+                // FIX #3: drive the ProgressBar; guard status text against
+                // overwriting an error or success message mid-load.
+                runOnUiThread {
+                    if (newProgress < 100) {
+                        loadingBar.visibility = View.VISIBLE
+                        loadingBar.progress   = newProgress
+                    } else {
+                        loadingBar.visibility = View.GONE
+                        val current = statusText.text.toString()
+                        if (current.startsWith("Loading") || current.isEmpty()) {
+                            setStatus("Sign in to YouTube Music, then play any song", isError = false)
+                        }
+                    }
                 }
             }
         }
@@ -302,7 +352,10 @@ class MainActivity : AppCompatActivity() {
     private fun tryBuildFromWebViewCookies(cookieStr: String, url: String) {
         val now = System.currentTimeMillis() / 1000
         if (now - lastWriteTime < 60) return
-        debugLog("tryBuildFromWebViewCookies: ${cookieStr.length} chars")
+        // FIX #16: warn that the fallback path can only synthesise authuser=0.
+        // Users signed in as a secondary Google account will get a broken auth file
+        // silently until a full API intercept fires and overwrites this one.
+        debugLog("tryBuildFromWebViewCookies: ${cookieStr.length} chars [WARNING: x-goog-authuser hardcoded to 0 — secondary account users may see auth failures until a full API intercept fires]")
         val uri    = Uri.parse(url)
         val origin = "${uri.scheme}://${uri.host}"
         val sb = StringBuilder()
@@ -358,13 +411,23 @@ class MainActivity : AppCompatActivity() {
         try { sendBroadcast(intent) } catch (_: Exception) {}
     }
 
+    /**
+     * FIX #10: all log writes are submitted to a single-threaded executor.
+     * This serialises concurrent calls from shouldInterceptRequest (WebView IO thread)
+     * and the main thread, preventing interleaved FileWriter writes.
+     * SimpleDateFormat is constructed per-call inside the executor task — it is not
+     * thread-safe so must not be shared, but construction is cheap given that logging
+     * is now gated to API-path requests only (fix #11).
+     */
     private fun debugLog(msg: String) {
-        try {
-            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            val f  = File(DEBUG_LOG)
-            f.parentFile?.mkdirs()
-            FileWriter(f, true).use { it.write("$ts  $msg\n") }
-        } catch (_: Exception) {}
+        logExecutor.execute {
+            try {
+                val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                val f  = File(DEBUG_LOG)
+                f.parentFile?.mkdirs()
+                FileWriter(f, true).use { it.write("$ts  $msg\n") }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun writeSentinel() {
@@ -381,18 +444,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSuccess() {
+        // FIX #5: cancel any pending hide-runnable before scheduling a new one,
+        // so rapid successive captures don't stack callbacks on a dead activity.
+        mainHandler.removeCallbacks(hideSuccessRunnable)
         statusCard.visibility  = View.GONE
         successCard.visibility = View.VISIBLE
-        Handler(Looper.getMainLooper()).postDelayed({
-            successCard.visibility = View.GONE
-            statusCard.visibility  = View.VISIBLE
-            setStatus("Session saved ✓  You can close this app", isError = false)
-        }, 3000)
+        mainHandler.postDelayed(hideSuccessRunnable, 3000)
     }
 
     private fun setStatus(msg: String, isError: Boolean) {
         runOnUiThread {
             statusText.text = msg
+            // FIX #7: error state uses full-white text for sharper contrast on #3A1A1A.
+            statusText.setTextColor(
+                if (isError) Color.WHITE else Color.parseColor("#CCCCCC")
+            )
             statusCard.setBackgroundResource(
                 if (isError) R.drawable.card_error else R.drawable.card_status
             )
@@ -400,6 +466,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // FIX #5: cancel pending success-hide timer so it cannot fire on a destroyed activity.
+        mainHandler.removeCallbacks(hideSuccessRunnable)
+        logExecutor.shutdown()
         webView.destroy()
         super.onDestroy()
     }

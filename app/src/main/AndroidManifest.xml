@@ -6,10 +6,12 @@
          runtime request required on API 23-28. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
-    <!-- API 29: legacy storage opt-in via requestLegacyExternalStorage on the
-         application element; WRITE_EXTERNAL_STORAGE still required as permission. -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
+    <!--
+        FIX #12: READ_EXTERNAL_STORAGE removed. It was declared but never requested at
+        runtime, and on API 29 it is automatically co-granted with WRITE_EXTERNAL_STORAGE,
+        so declaring it separately was dead manifest weight. On API 30+ it is superseded
+        by MANAGE_EXTERNAL_STORAGE entirely.
+    -->
     <!-- API 30+ (Android 11+): scoped storage — MANAGE_EXTERNAL_STORAGE is the
          only way to write to arbitrary public directories. User is directed to
          the system "All files access" settings page on first launch. -->
@@ -30,8 +32,13 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTask">
+            <!--
+                FIX #13: windowSoftInputMode="adjustResize" removed. On API 30+ it
+                is a no-op when WindowInsets are in use (which this app sets via
+                WindowInsetsController). The system keyboard overlay behaviour is
+                correct for a full-screen WebView without it.
+            -->
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
